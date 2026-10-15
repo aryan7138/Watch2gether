@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Watch Party</title>
+<style>
+  :root { --bg:#0f0f0f; --panel:#1a1a1a; --line:#2c2c2c; --text:#f1f1f1; --muted:#9a9a9a; --accent:#e50914; --ok:#2ecc71; }
+  * { box-sizing:border-box; margin:0; }
+  [hidden] { display:none !important; }
+  body { background:var(--bg); color:var(--text); min-height:100vh; display:flex; flex-direction:column;
+         font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  header { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px;
+           padding:14px 24px; border-bottom:1px solid var(--line); }
+  .logo { font-weight:800; font-size:22px; color:var(--accent); letter-spacing:.3px; }
+  .logo span { color:var(--text); }
+  .right { display:flex; align-items:center; flex-wrap:wrap; gap:10px; }
+  .pill { font-size:13px; padding:6px 12px; border-radius:99px; background:var(--panel); border:1px solid var(--line); color:var(--muted); }
+  .pill b { color:var(--text); font-weight:600; }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#666; margin-right:7px; }
+  .dot.on { background:var(--ok); }
+  button { background:var(--accent); color:#fff; border:0; padding:10px 18px; border-radius:6px; font-size:14px; font-weight:600; cursor:pointer; }
+  button.ghost { background:#2c2c2c; }
+  button:hover:not(:disabled) { filter:brightness(1.2); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  button:focus-visible, input:focus-visible { outline:2px solid #fff; outline-offset:2px; }
+  main { flex:1; width:100%; max-width:1100px; margin:0 auto; padding:20px; display:flex; flex-direction:column; gap:14px; }
+  .bar { display:flex; gap:10px; }
+  input { flex:1; min-width:0; background:var(--panel); border:1px solid var(--line); color:var(--text);
+          padding:11px 14px; border-radius:6px; font-size:14px; }
+  input:disabled { opacity:.5; }
+  .stage { position:relative; background:#000; border:1px solid var(--line); border-radius:10px; overflow:hidden; aspect-ratio:16/9; }
+  video { width:100%; height:100%; display:block; background:#000; }
+  .empty { position:absolute; inset:0; display:grid; place-items:center; padding:24px; text-align:center; color:var(--muted); pointer-events:none; }
+  .note { color:var(--muted); font-size:14px; }
+  .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:#2c2c2c; padding:11px 18px;
+           border-radius:8px; font-size:14px; opacity:0; transition:opacity .25s; pointer-events:none; }
+  .toast.show { opacity:1; }
+  .full { position:fixed; inset:0; background:var(--bg); display:grid; place-items:center; text-align:center; padding:24px; z-index:10; }
+  .full p { color:var(--muted); margin-top:8px; }
+
+  /* ---- Mobile ---- */
+  body { min-height:100dvh; -webkit-tap-highlight-color:transparent;
+         padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  button, input { min-height:44px; }
+  .tap { position:absolute; inset:0; width:100%; height:100%; border-radius:0; background:rgba(0,0,0,.7); font-size:18px; }
+  @media (max-width:640px) {
+    header { padding:10px 14px; }
+    .logo { font-size:19px; }
+    .right { width:100%; justify-content:space-between; }
+    .pill { font-size:12px; padding:5px 10px; }
+    main { padding:12px 0; gap:12px; }
+    .bar { flex-wrap:wrap; padding:0 14px; }
+    input { flex:1 1 100%; font-size:16px; }
+    .bar button { flex:1; }
+    .stage { border-radius:0; border-left:0; border-right:0; }
+    .note { padding:0 14px; font-size:13px; }
+  }
+  @media (max-height:480px) and (orientation:landscape) {
+    header, .bar, .note { display:none; }
+    main { padding:0; }
+    .stage { aspect-ratio:auto; border:0; border-radius:0;
+             height:calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom)); }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">Watch<span>Party</span></div>
+  <div class="right">
+    <div class="pill"><span class="dot" id="dot"></span><span id="status">Connecting…</span></div>
+    <div class="pill">Role: <b id="role">–</b></div>
+    <button id="copy" class="ghost">Copy Link</button>
+  </div>
+</header>
+
+<main>
+  <div class="bar">
+    <input id="url" type="url" placeholder="Paste a direct MP4 link (https://…)" disabled>
+    <button id="load" disabled>Load</button>
+    <button id="resync" class="ghost" hidden>Resync</button>
+  </div>
+  <div class="stage">
+    <video id="v" controls playsinline preload="auto"></video>
+    <div class="empty" id="empty">No video yet. The host can paste a direct MP4 link above.</div>
+    <button class="tap" id="tap" hidden>Tap to join the video</button>
+  </div>
+  <p class="note" id="note"></p>
+</main>
+
+<div class="full" id="full" hidden>
+  <div><h2>This room is full</h2><p>Only 2 people can watch together. Ask your friend for a new link.</p></div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script>
+  // ===== CONFIG: replace with your Render URL after deploying the backend =====
+  const BACKEND_URL = ['localhost', '127.0.0.1'].includes(location.hostname)
+    ? 'http://localhost:3000'
+    : 'https://YOUR-APP-NAME.onrender.com';
+  const ROOM_LEN = 6;
+  // ===========================================================================
+
+  const $ = (id) => document.getElementById(id);
+  const v = $('v'), urlIn = $('url'), loadBtn = $('load'), resyncBtn = $('resync');
+
+  // --- Room ID: generate and put in URL if missing ---
+  function genId() {
+    const c = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    let s = '';
+    for (let i = 0; i < ROOM_LEN; i++) s += c[Math.floor(Math.random() * c.length)];
+    return s;
+  }
+  let room = (new URLSearchParams(location.search).get('room') || '').toLowerCase();
+  if (!room) {
+    room = genId();
+    history.replaceState(null, '', '?room=' + room);
+  }
+
+  // --- Helpers ---
+  let toastTimer;
+  function toast(msg) {
+    const t = $('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), 2800);
+  }
+
+  let isHost = false, pending = null, ticker = null, blocked = false;
+
+  function setRole(host) {
+    isHost = host;
+    $('role').textContent = host ? 'Host' : 'Guest';
+    urlIn.disabled = loadBtn.disabled = !host;
+    resyncBtn.hidden = host;
+    $('note').textContent = host
+      ? 'You are the Host. Play, pause and seek are synced to your friend.'
+      : 'The Host controls playback. Press Resync if you drift out of sync.';
+    clearInterval(ticker);
+    if (host) ticker = setInterval(() => { if (!v.paused) sendState(); }, 5000);
+  }
+
+  function loadVideo(url, broadcast) {
+    urlIn.value = url;
+    v.src = url;
+    v.load();
+    $('empty').hidden = true;
+    if (broadcast) socket.emit('load', url);
+  }
+
+  // --- Host -> server ---
+  function sendState() {
+    if (isHost) socket.emit('state', { time: v.currentTime, playing: !v.paused });
+  }
+  ['play', 'pause', 'seeked'].forEach((e) => v.addEventListener(e, sendState));
+
+  // --- Guest applies host state ---
+  function applyState(s) {
+    if (isHost) return;
+    pending = s;
+    if (v.readyState < 1) return; // applied after loadedmetadata
+    if (Math.abs(v.currentTime - s.time) > 1.2) v.currentTime = s.time;
+    if (s.playing && v.paused) v.play().catch(() => { $('tap').hidden = false; });
+    if (!s.playing && !v.paused) v.pause();
+  }
+  v.addEventListener('loadedmetadata', () => { if (!isHost && pending) applyState(pending); });
+  v.addEventListener('play', () => { $('tap').hidden = true; });
+  $('tap').onclick = () => {
+    $('tap').hidden = true;
+    v.play().catch(() => {}); // a tap counts as the gesture phones require
+    socket.emit('resync');
+  };
+  v.addEventListener('error', () => {
+    if (v.getAttribute('src')) toast('Could not play this link. Use a direct MP4 file URL.');
+  });
+
+  // --- Socket ---
+  const socket = io(BACKEND_URL);
+
+  socket.on('connect', () => {
+    $('dot').classList.add('on');
+    $('status').textContent = 'Connected';
+    socket.emit('join', room);
+  });
+  socket.on('disconnect', () => {
+    if (blocked) return;
+    $('dot').classList.remove('on');
+    $('status').textContent = 'Reconnecting…';
+  });
+  socket.on('connect_error', () => { $('status').textContent = 'Server is waking up, retrying…'; });
+  socket.on('room-full', () => { blocked = true; $('full').hidden = false; socket.disconnect(); });
+  socket.on('joined', ({ role, url, state }) => {
+    setRole(role === 'host');
+    if (url) loadVideo(url, false);
+    if (!isHost) pending = state;
+  });
+  socket.on('role', (r) => setRole(r === 'host'));
+  socket.on('peers', (n) => { $('status').textContent = n < 2 ? 'Waiting for your friend…' : 'Friend connected'; });
+  socket.on('load', (url) => { pending = { time: 0, playing: false }; loadVideo(url, false); });
+  socket.on('state', applyState);
+
+  // --- Buttons ---
+  loadBtn.onclick = () => {
+    const u = urlIn.value.trim();
+    if (!/^https?:\/\//i.test(u)) return toast('Enter a valid http(s) video link');
+    loadVideo(u, true);
+  };
+  urlIn.addEventListener('keydown', (e) => { if (e.key === 'Enter') loadBtn.click(); });
+  resyncBtn.onclick = () => socket.emit('resync');
+  $('copy').onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(location.href);
+      toast('Link copied');
+    } catch {
+      prompt('Copy this link:', location.href);
+    }
+  };
+</script>
+</body>
+</html>
